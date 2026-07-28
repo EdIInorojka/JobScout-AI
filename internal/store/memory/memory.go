@@ -58,6 +58,10 @@ func (s *Store) EnsureCoreSource(ctx context.Context, source *core.JobSource) er
 	return s.UpsertJobSource(ctx, source)
 }
 
+func (s *Store) WithinImportTransaction(ctx context.Context, fn func(store.ImportStore) error) error {
+	return fn(s)
+}
+
 func (s *Store) ListJobSources(ctx context.Context, enabledOnly bool) ([]core.JobSource, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -173,7 +177,7 @@ func (s *Store) ListVacancies(ctx context.Context, filter store.ListVacanciesFil
 		}
 		match, ok := s.matches[vacancy.ID]
 		if filter.RecommendedOnly {
-			if vacancy.Status != core.VacancyStatusRecommended || !ok || !match.HardFilterPassed || match.TotalScore < 55 {
+			if vacancy.Status != core.VacancyStatusRecommended || !ok || !match.HardFilterPassed {
 				continue
 			}
 		}
@@ -217,6 +221,9 @@ func (s *Store) ListRecommendedVacancies(ctx context.Context, filter store.ListV
 func (s *Store) UpsertVacancyMatch(ctx context.Context, match *core.VacancyMatch) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.matches[match.VacancyID]; ok && match.ID == "" {
+		match.ID = existing.ID
+	}
 	if match.ID == "" {
 		match.ID = core.NewID()
 	}

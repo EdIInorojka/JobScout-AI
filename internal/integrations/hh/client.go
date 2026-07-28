@@ -23,6 +23,7 @@ type Client struct {
 	accessToken string
 	host        string
 	minDelay    time.Duration
+	sleep       func(context.Context, time.Duration) error
 
 	mu        sync.Mutex
 	lastStart time.Time
@@ -98,7 +99,16 @@ func NewClient(baseURL, userAgent, accessToken, host string, timeout, minDelay t
 		accessToken: accessToken,
 		host:        host,
 		minDelay:    minDelay,
+		sleep:       waitFor,
 	}, nil
+}
+
+func (c *Client) SetSleeper(sleep func(context.Context, time.Duration) error) {
+	if sleep == nil {
+		c.sleep = waitFor
+		return
+	}
+	c.sleep = sleep
 }
 
 func (c *Client) SearchVacancies(ctx context.Context, query string, page, perPage int) (SearchResponse, error) {
@@ -152,7 +162,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, des
 			if !isTemporary(err) || attempt == attempts-1 {
 				return err
 			}
-			if err := sleepBackoff(ctx, attempt); err != nil {
+			if err := c.sleep(ctx, time.Duration(attempt+1)*500*time.Millisecond); err != nil {
 				return err
 			}
 			continue
@@ -164,7 +174,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, des
 			if attempt == attempts-1 {
 				return readErr
 			}
-			if err := sleepBackoff(ctx, attempt); err != nil {
+			if err := c.sleep(ctx, time.Duration(attempt+1)*500*time.Millisecond); err != nil {
 				return err
 			}
 			continue
@@ -178,7 +188,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, des
 			if attempt == attempts-1 {
 				return lastErr
 			}
-			if err := waitFor(ctx, wait); err != nil {
+			if err := c.sleep(ctx, wait); err != nil {
 				return err
 			}
 			continue
@@ -191,7 +201,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, des
 			if attempt == attempts-1 {
 				return lastErr
 			}
-			if err := sleepBackoff(ctx, attempt); err != nil {
+			if err := c.sleep(ctx, time.Duration(attempt+1)*500*time.Millisecond); err != nil {
 				return err
 			}
 			continue
@@ -225,11 +235,6 @@ func (c *Client) throttle(ctx context.Context) error {
 	c.lastStart = time.Now()
 	c.mu.Unlock()
 	return nil
-}
-
-func sleepBackoff(ctx context.Context, attempt int) error {
-	delay := time.Duration(attempt+1) * 500 * time.Millisecond
-	return waitFor(ctx, delay)
 }
 
 func waitFor(ctx context.Context, delay time.Duration) error {

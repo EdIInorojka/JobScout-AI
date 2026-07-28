@@ -7,6 +7,23 @@ on:
 jobs:
   go:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: jobscout_test
+          POSTGRES_USER: jobscout
+          POSTGRES_PASSWORD: jobscout
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobscout -d jobscout_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://jobscout:jobscout@localhost:5432/jobscout_test?sslmode=disable
+      TEST_DATABASE_URL: postgres://jobscout:jobscout@localhost:5432/jobscout_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,4 +42,9 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build ./...
-
+      - name: Apply migrations
+        run: make migrate
+      - name: PostgreSQL integration tests
+        run: make test-integration
+      - name: HH fake-server tests
+        run: make test-hh

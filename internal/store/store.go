@@ -22,6 +22,18 @@ type VacancyWithMatch struct {
 	Match   *core.VacancyMatch `json:"match,omitempty"`
 }
 
+type ImportStore interface {
+	GetOrCreateCompany(ctx context.Context, company *core.Company) (*core.Company, error)
+	FindVacancyBySourceExternalID(ctx context.Context, sourceID, externalID string) (*core.Vacancy, error)
+	FindVacancyByContentHash(ctx context.Context, contentHash string) (*core.Vacancy, error)
+	UpsertVacancy(ctx context.Context, vacancy *core.Vacancy) error
+	UpsertVacancyMatch(ctx context.Context, match *core.VacancyMatch) error
+}
+
+type ImportTxRunner interface {
+	WithinImportTransaction(ctx context.Context, fn func(ImportStore) error) error
+}
+
 type Store interface {
 	UpsertCandidateProfile(ctx context.Context, profile *core.CandidateProfile) error
 	GetCandidateProfile(ctx context.Context) (*core.CandidateProfile, error)

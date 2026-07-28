@@ -56,3 +56,29 @@ docker compose up --build app
 - Automatic applications are intentionally not implemented.
 - Telegram bot is optional and disabled when the token is missing.
 
+## Testing
+
+Unit suite:
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
+
+PostgreSQL integration suite:
+
+```bash
+docker compose up -d db
+export DATABASE_URL=postgres://jobscout:jobscout@localhost:5432/jobscout?sslmode=disable
+export TEST_DATABASE_URL=$DATABASE_URL
+make migrate
+make test-integration
+docker compose down -v
+```
+
+HeadHunter fake-server suite:
+
+```bash
+make test-hh
+```

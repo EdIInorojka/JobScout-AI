@@ -471,7 +471,7 @@ func (s *Store) UpsertVacancyMatch(ctx context.Context, match *core.VacancyMatch
 	if match.CalculatedAt.IsZero() {
 		match.CalculatedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	row := s.db.QueryRowContext(ctx, `
 INSERT INTO vacancy_matches (
     id, vacancy_id, candidate_profile_id, total_score, skills_score, experience_score,
     location_score, salary_score, grade_score, role_score, positive_reasons, negative_reasons,
@@ -493,7 +493,8 @@ INSERT INTO vacancy_matches (
     missing_skills = EXCLUDED.missing_skills,
     hard_filter_passed = EXCLUDED.hard_filter_passed,
     calculated_at = EXCLUDED.calculated_at,
-    scoring_version = EXCLUDED.scoring_version`,
+    scoring_version = EXCLUDED.scoring_version
+RETURNING id`,
 		match.ID,
 		match.VacancyID,
 		match.CandidateProfileID,
@@ -511,7 +512,7 @@ INSERT INTO vacancy_matches (
 		match.CalculatedAt,
 		match.ScoringVersion,
 	)
-	return err
+	return row.Scan(&match.ID)
 }
 
 func (s *Store) GetVacancyMatch(ctx context.Context, vacancyID string) (*core.VacancyMatch, error) {
@@ -529,6 +530,232 @@ WHERE vacancy_id = $1`, vacancyID)
 		return nil, err
 	}
 	return &match, nil
+}
+
+func (s *Store) WithinImportTransaction(ctx context.Context, fn func(store.ImportStore) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	txStore := &txStore{tx: tx}
+	if err := fn(txStore); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+type txStore struct {
+	tx *sql.Tx
+}
+
+func (s *txStore) GetOrCreateCompany(ctx context.Context, company *core.Company) (*core.Company, error) {
+	if company.ID == "" {
+		company.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if company.CreatedAt.IsZero() {
+		company.CreatedAt = now
+	}
+	company.UpdatedAt = now
+	row := s.tx.QueryRowContext(ctx, `
+INSERT INTO companies (
+    id, normalized_name, display_name, website, career_page, blacklisted, notes, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
+) ON CONFLICT (normalized_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    website = COALESCE(EXCLUDED.website, companies.website),
+    career_page = COALESCE(EXCLUDED.career_page, companies.career_page),
+    blacklisted = companies.blacklisted OR EXCLUDED.blacklisted,
+    notes = COALESCE(EXCLUDED.notes, companies.notes),
+    updated_at = EXCLUDED.updated_at
+RETURNING id, normalized_name, display_name, website, career_page, blacklisted, notes, created_at, updated_at`,
+		company.ID,
+		company.NormalizedName,
+		company.DisplayName,
+		nullString(company.Website),
+		nullString(company.CareerPage),
+		company.Blacklisted,
+		nullString(company.Notes),
+		company.CreatedAt,
+		company.UpdatedAt,
+	)
+	return scanCompany(row)
+}
+
+func (s *txStore) FindVacancyBySourceExternalID(ctx context.Context, sourceID, externalID string) (*core.Vacancy, error) {
+	row := s.tx.QueryRowContext(ctx, vacancySelectBy("source_id = $1 AND external_id = $2"), sourceID, externalID)
+	vacancy, err := scanVacancy(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &vacancy, nil
+}
+
+func (s *txStore) FindVacancyByContentHash(ctx context.Context, contentHash string) (*core.Vacancy, error) {
+	row := s.tx.QueryRowContext(ctx, `
+SELECT id, source_id, external_id, source_url, canonical_url, title, normalized_title, company_id,
+       description, requirements, responsibilities, location, remote_type, employment_type, grade,
+       salary_from, salary_to, currency, skills, language_requirements, work_authorization_requirements,
+       published_at, collected_at, content_hash, status, duplicate_of_vacancy_id, dedup_reason,
+       created_at, updated_at
+FROM vacancies
+WHERE content_hash = $1 AND duplicate_of_vacancy_id IS NULL
+ORDER BY created_at ASC
+LIMIT 1`, contentHash)
+	vacancy, err := scanVacancy(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &vacancy, nil
+}
+
+func (s *txStore) UpsertVacancy(ctx context.Context, vacancy *core.Vacancy) error {
+	if vacancy.ID == "" {
+		vacancy.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if vacancy.CreatedAt.IsZero() {
+		vacancy.CreatedAt = now
+	}
+	vacancy.UpdatedAt = now
+	var duplicateOf any = nil
+	if vacancy.DuplicateOfVacancyID != nil {
+		duplicateOf = *vacancy.DuplicateOfVacancyID
+	}
+	var dedupReason any = nil
+	if vacancy.DedupReason != nil {
+		dedupReason = *vacancy.DedupReason
+	}
+	row := s.tx.QueryRowContext(ctx, `
+INSERT INTO vacancies (
+    id, source_id, external_id, source_url, canonical_url, title, normalized_title, company_id,
+    description, requirements, responsibilities, location, remote_type, employment_type, grade,
+    salary_from, salary_to, currency, skills, language_requirements, work_authorization_requirements,
+    published_at, collected_at, content_hash, status, duplicate_of_vacancy_id, dedup_reason,
+    created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18, $19, $20, $21,
+    $22, $23, $24, $25, $26, $27,
+    $28, $29
+) ON CONFLICT (source_id, external_id) DO UPDATE SET
+    source_url = EXCLUDED.source_url,
+    canonical_url = EXCLUDED.canonical_url,
+    title = EXCLUDED.title,
+    normalized_title = EXCLUDED.normalized_title,
+    company_id = EXCLUDED.company_id,
+    description = EXCLUDED.description,
+    requirements = EXCLUDED.requirements,
+    responsibilities = EXCLUDED.responsibilities,
+    location = EXCLUDED.location,
+    remote_type = EXCLUDED.remote_type,
+    employment_type = EXCLUDED.employment_type,
+    grade = EXCLUDED.grade,
+    salary_from = EXCLUDED.salary_from,
+    salary_to = EXCLUDED.salary_to,
+    currency = EXCLUDED.currency,
+    skills = EXCLUDED.skills,
+    language_requirements = EXCLUDED.language_requirements,
+    work_authorization_requirements = EXCLUDED.work_authorization_requirements,
+    published_at = EXCLUDED.published_at,
+    collected_at = EXCLUDED.collected_at,
+    content_hash = EXCLUDED.content_hash,
+    status = EXCLUDED.status,
+    duplicate_of_vacancy_id = EXCLUDED.duplicate_of_vacancy_id,
+    dedup_reason = EXCLUDED.dedup_reason,
+    updated_at = EXCLUDED.updated_at
+RETURNING id`,
+		vacancy.ID,
+		vacancy.SourceID,
+		vacancy.ExternalID,
+		vacancy.SourceURL,
+		vacancy.CanonicalURL,
+		vacancy.Title,
+		vacancy.NormalizedTitle,
+		vacancy.CompanyID,
+		vacancy.Description,
+		vacancy.Requirements,
+		vacancy.Responsibilities,
+		vacancy.Location,
+		vacancy.RemoteType,
+		vacancy.EmploymentType,
+		vacancy.Grade,
+		nullInt(vacancy.SalaryFrom),
+		nullInt(vacancy.SalaryTo),
+		vacancy.Currency,
+		mustJSON(vacancy.Skills),
+		mustJSON(vacancy.LanguageRequirements),
+		mustJSON(vacancy.WorkAuthorizationRequirements),
+		vacancy.PublishedAt,
+		vacancy.CollectedAt,
+		vacancy.ContentHash,
+		string(vacancy.Status),
+		duplicateOf,
+		dedupReason,
+		vacancy.CreatedAt,
+		vacancy.UpdatedAt,
+	)
+	return row.Scan(&vacancy.ID)
+}
+
+func (s *txStore) UpsertVacancyMatch(ctx context.Context, match *core.VacancyMatch) error {
+	if match.ID == "" {
+		match.ID = core.NewID()
+	}
+	if match.CalculatedAt.IsZero() {
+		match.CalculatedAt = time.Now().UTC()
+	}
+	row := s.tx.QueryRowContext(ctx, `
+INSERT INTO vacancy_matches (
+    id, vacancy_id, candidate_profile_id, total_score, skills_score, experience_score,
+    location_score, salary_score, grade_score, role_score, positive_reasons, negative_reasons,
+    missing_skills, hard_filter_passed, calculated_at, scoring_version
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11, $12,
+    $13, $14, $15, $16
+) ON CONFLICT (vacancy_id, candidate_profile_id) DO UPDATE SET
+    total_score = EXCLUDED.total_score,
+    skills_score = EXCLUDED.skills_score,
+    experience_score = EXCLUDED.experience_score,
+    location_score = EXCLUDED.location_score,
+    salary_score = EXCLUDED.salary_score,
+    grade_score = EXCLUDED.grade_score,
+    role_score = EXCLUDED.role_score,
+    positive_reasons = EXCLUDED.positive_reasons,
+    negative_reasons = EXCLUDED.negative_reasons,
+    missing_skills = EXCLUDED.missing_skills,
+    hard_filter_passed = EXCLUDED.hard_filter_passed,
+    calculated_at = EXCLUDED.calculated_at,
+    scoring_version = EXCLUDED.scoring_version
+RETURNING id`,
+		match.ID,
+		match.VacancyID,
+		match.CandidateProfileID,
+		match.TotalScore,
+		match.SkillsScore,
+		match.ExperienceScore,
+		match.LocationScore,
+		match.SalaryScore,
+		match.GradeScore,
+		match.RoleScore,
+		mustJSON(match.PositiveReasons),
+		mustJSON(match.NegativeReasons),
+		mustJSON(match.MissingSkills),
+		match.HardFilterPassed,
+		match.CalculatedAt,
+		match.ScoringVersion,
+	)
+	return row.Scan(&match.ID)
 }
 
 func vacancySelectBy(where string) string {

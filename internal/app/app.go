@@ -325,10 +325,23 @@ func (a *App) runHeadhunterSource(ctx context.Context, source core.JobSource, qu
 }
 
 func (a *App) importVacancyFromRaw(ctx context.Context, source core.JobSource, raw core.RawVacancy, profile *core.CandidateProfile) (*store.VacancyWithMatch, error) {
+	if txRunner, ok := a.storage.(store.ImportTxRunner); ok {
+		var result *store.VacancyWithMatch
+		err := txRunner.WithinImportTransaction(ctx, func(txStore store.ImportStore) error {
+			var err error
+			result, err = a.importVacancyFromRawWithStorage(ctx, txStore, source, raw, profile)
+			return err
+		})
+		return result, err
+	}
+	return a.importVacancyFromRawWithStorage(ctx, a.storage, source, raw, profile)
+}
+
+func (a *App) importVacancyFromRawWithStorage(ctx context.Context, storage store.ImportStore, source core.JobSource, raw core.RawVacancy, profile *core.CandidateProfile) (*store.VacancyWithMatch, error) {
 	now := a.now()
 	normalized := core.NormalizeVacancy(raw)
 	companyName := firstNonEmpty(raw.CompanyName, hostnameFromURL(raw.SourceURL), "unknown company")
-	company, err := a.storage.GetOrCreateCompany(ctx, &core.Company{
+	company, err := storage.GetOrCreateCompany(ctx, &core.Company{
 		ID:             core.NewID(),
 		NormalizedName: core.NormalizeText(companyName),
 		DisplayName:    companyName,
@@ -337,7 +350,7 @@ func (a *App) importVacancyFromRaw(ctx context.Context, source core.JobSource, r
 	if err != nil {
 		return nil, err
 	}
-	existing, err := a.storage.FindVacancyBySourceExternalID(ctx, source.ID, raw.ExternalID)
+	existing, err := storage.FindVacancyBySourceExternalID(ctx, source.ID, raw.ExternalID)
 	var existingStatus core.VacancyStatus
 	var existingCreatedAt time.Time
 	if err == nil {
@@ -403,7 +416,7 @@ func (a *App) importVacancyFromRaw(ctx context.Context, source core.JobSource, r
 	}
 	vacancy.CreatedAt = existingCreatedAt
 	vacancy.UpdatedAt = now
-	if err := a.storage.UpsertVacancy(ctx, &vacancy); err != nil {
+	if err := storage.UpsertVacancy(ctx, &vacancy); err != nil {
 		return nil, err
 	}
 	match := &core.VacancyMatch{
@@ -423,11 +436,10 @@ func (a *App) importVacancyFromRaw(ctx context.Context, source core.JobSource, r
 		CalculatedAt:       now,
 		ScoringVersion:     score.Version,
 	}
-	if err := a.storage.UpsertVacancyMatch(ctx, match); err != nil {
+	if err := storage.UpsertVacancyMatch(ctx, match); err != nil {
 		return nil, err
 	}
-	vacancyWithRelations := &store.VacancyWithMatch{Vacancy: vacancy, Company: company, Match: match}
-	return vacancyWithRelations, nil
+	return &store.VacancyWithMatch{Vacancy: vacancy, Company: company, Match: match}, nil
 }
 
 func (a *App) detectDedup(ctx context.Context, sourceID, externalID, contentHash string, existing *core.Vacancy) (*string, *string, bool, error) {
