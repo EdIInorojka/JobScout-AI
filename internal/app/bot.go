@@ -86,35 +86,59 @@ func (a *App) handleTelegramCallback(ctx context.Context, cb *tele.CallbackQuery
 		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Access denied")
 		return ErrUnknownUser
 	}
-	parts := strings.Split(cb.Data, ":")
-	if len(parts) != 3 || parts[0] != "vac" {
-		return a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+	parts := strings.SplitN(cb.Data, ":", 3)
+	if len(parts) != 3 {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+		return nil
 	}
-	vacancyID := parts[1]
+	prefix := parts[0]
+	id := parts[1]
 	action := parts[2]
-	var status core.VacancyStatus
-	switch action {
-	case "like":
-		status = core.VacancyStatusViewed
-	case "skip":
-		status = core.VacancyStatusArchived
+	switch prefix {
+	case "vac":
+		switch action {
+		case "prep", "like":
+			return a.handleTelegramPrepareApplication(ctx, cb, id)
+		case "skip":
+			item, err := a.UpdateVacancyStatus(ctx, id, core.VacancyStatusArchived)
+			if err != nil {
+				_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+				return err
+			}
+			if cb.Message != nil {
+				edited := vacancyCardText(*item)
+				_ = a.tgClient.EditMessageText(ctx, cb.Message.Chat.ID, cb.Message.MessageID, edited, vacancyCardMarkup(*item))
+			}
+			_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Updated")
+			return nil
+		default:
+			_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+			return nil
+		}
+	case "app":
+		switch action {
+		case "approve":
+			return a.handleTelegramApproveApplication(ctx, cb, id)
+		case "cancel":
+			return a.handleTelegramCancelApplication(ctx, cb, id)
+		case "submitted":
+			return a.handleTelegramSubmittedApplication(ctx, cb, id)
+		case "hr":
+			return a.handleTelegramOutcomeApplication(ctx, cb, id, core.ApplicationStatusHRContact)
+		case "interview":
+			return a.handleTelegramOutcomeApplication(ctx, cb, id, core.ApplicationStatusInterview)
+		case "offer":
+			return a.handleTelegramOutcomeApplication(ctx, cb, id, core.ApplicationStatusOffer)
+		case "reject":
+			return a.handleTelegramOutcomeApplication(ctx, cb, id, core.ApplicationStatusRejected)
+		default:
+			_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+			return nil
+		}
 	default:
-		return a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Unknown action")
+		return nil
 	}
-	item, err := a.UpdateVacancyStatus(ctx, vacancyID, status)
-	if err != nil {
-		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
-		return err
-	}
-	if cb.Message != nil {
-		edited := vacancyCardText(*item)
-		_ = a.tgClient.EditMessageText(ctx, cb.Message.Chat.ID, cb.Message.MessageID, edited, nil)
-	}
-	_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Updated")
-	if cb.Message != nil {
-		return a.sendTopRecommendedVacancy(ctx, cb.Message.Chat.ID)
-	}
-	return nil
 }
 
 func (a *App) replyTelegramStart(ctx context.Context, chatID int64) error {
@@ -150,9 +174,15 @@ func vacancyCardMarkup(item store.VacancyWithMatch) *tele.InlineKeyboardMarkup {
 	if strings.TrimSpace(urlTarget) == "" {
 		urlTarget = item.Vacancy.SourceURL
 	}
+	if item.Vacancy.Status == core.VacancyStatusArchived {
+		if strings.TrimSpace(urlTarget) != "" {
+			return tele.NewInlineKeyboard([]tele.InlineKeyboardButton{tele.URLButton("Открыть вакансию", urlTarget)})
+		}
+		return tele.NewInlineKeyboard()
+	}
 	rows := [][]tele.InlineKeyboardButton{
 		{
-			tele.Button("Подходит", "vac:"+item.Vacancy.ID+":like"),
+			tele.Button("Подготовить отклик", "vac:"+item.Vacancy.ID+":prep"),
 			tele.Button("Пропустить", "vac:"+item.Vacancy.ID+":skip"),
 		},
 	}
@@ -200,6 +230,230 @@ func vacancyCardText(item store.VacancyWithMatch) string {
 		lines = append(lines, html.EscapeString(link))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (a *App) handleTelegramPrepareApplication(ctx context.Context, cb *tele.CallbackQuery, vacancyID string) error {
+	view, err := a.PrepareApplication(ctx, vacancyID, nil, telegramActor(cb.From))
+	if err != nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+		return err
+	}
+	if cb.Message != nil {
+		if err := a.tgClient.SendMessage(ctx, cb.Message.Chat.ID, applicationPreviewText(*view), applicationPreviewMarkup(*view)); err != nil {
+			_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+			return err
+		}
+	}
+	_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, "Preview ready")
+	return nil
+}
+
+func (a *App) handleTelegramApproveApplication(ctx context.Context, cb *tele.CallbackQuery, applicationID string) error {
+	view, err := a.ApproveApplication(ctx, applicationID, telegramActor(cb.From))
+	if err != nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+		return err
+	}
+	return a.replyWithApplicationView(ctx, cb, view, "Approved")
+}
+
+func (a *App) handleTelegramCancelApplication(ctx context.Context, cb *tele.CallbackQuery, applicationID string) error {
+	view, err := a.CancelApplication(ctx, applicationID, telegramActor(cb.From))
+	if err != nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+		return err
+	}
+	return a.replyWithApplicationView(ctx, cb, view, "Cancelled")
+}
+
+func (a *App) handleTelegramSubmittedApplication(ctx context.Context, cb *tele.CallbackQuery, applicationID string) error {
+	view, err := a.MarkApplicationSubmitted(ctx, applicationID, telegramActor(cb.From))
+	if err != nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+		return err
+	}
+	return a.replyWithApplicationView(ctx, cb, view, "Saved")
+}
+
+func (a *App) handleTelegramOutcomeApplication(ctx context.Context, cb *tele.CallbackQuery, applicationID string, status core.ApplicationStatus) error {
+	view, err := a.UpdateApplicationOutcome(ctx, applicationID, ApplicationOutcomeRequest{Status: string(status)}, telegramActor(cb.From))
+	if err != nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, html.EscapeString(err.Error()))
+		return err
+	}
+	return a.replyWithApplicationView(ctx, cb, view, "Saved")
+}
+
+func (a *App) replyWithApplicationView(ctx context.Context, cb *tele.CallbackQuery, view *ApplicationView, answerText string) error {
+	text, markup := applicationStatusText(*view), applicationStatusMarkup(*view)
+	if cb.Message == nil {
+		_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, answerText)
+		return nil
+	}
+	_ = a.tgClient.EditMessageText(ctx, cb.Message.Chat.ID, cb.Message.MessageID, text, markup)
+	_ = a.tgClient.AnswerCallbackQuery(ctx, cb.ID, answerText)
+	return nil
+}
+
+func applicationPreviewText(view ApplicationView) string {
+	vacancy := view.Vacancy
+	company := ""
+	if view.Company != nil {
+		company = view.Company.DisplayName
+	}
+	score := "n/a"
+	if view.Match != nil {
+		score = strconv.Itoa(view.Match.TotalScore)
+	}
+	resumeLine := "n/a"
+	if view.Resume != nil {
+		resumeLine = fmt.Sprintf("%s (%s, %s)", html.EscapeString(view.Resume.Name), html.EscapeString(core.ResumeTargetRoleLabel(view.Resume.TargetRole)), html.EscapeString(string(view.Resume.Language)))
+	}
+	lines := []string{
+		"<b>Подготовка отклика</b>",
+		"<b>" + html.EscapeString(vacancy.Title) + "</b>",
+		html.EscapeString(company),
+		"Score: " + html.EscapeString(score),
+		"Резюме: " + resumeLine,
+		"<b>Сопроводительное письмо</b>",
+		html.EscapeString(view.Application.CoverLetter),
+	}
+	if len(view.Warnings) > 0 {
+		lines = append(lines, "<b>Warnings</b>")
+		for _, warning := range view.Warnings {
+			lines = append(lines, "• "+html.EscapeString(warning))
+		}
+	}
+	if view.VacancyURL != "" {
+		lines = append(lines, html.EscapeString(view.VacancyURL))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func applicationStatusText(view ApplicationView) string {
+	vacancy := view.Vacancy
+	company := ""
+	if view.Company != nil {
+		company = view.Company.DisplayName
+	}
+	score := "n/a"
+	if view.Match != nil {
+		score = strconv.Itoa(view.Match.TotalScore)
+	}
+	resumeLine := "n/a"
+	if view.Resume != nil {
+		resumeLine = fmt.Sprintf("%s (%s, %s)", html.EscapeString(view.Resume.Name), html.EscapeString(core.ResumeTargetRoleLabel(view.Resume.TargetRole)), html.EscapeString(string(view.Resume.Language)))
+	}
+	status := view.Application.Status
+	lines := []string{
+		"<b>" + html.EscapeString(applicationStatusLabel(status)) + "</b>",
+		"<b>" + html.EscapeString(vacancy.Title) + "</b>",
+		html.EscapeString(company),
+		"Score: " + html.EscapeString(score),
+		"Резюме: " + resumeLine,
+	}
+	switch status {
+	case core.ApplicationStatusManualActionRequired, core.ApplicationStatusApproved:
+		lines = append(lines,
+			"Автоматическая отправка не выполнена.",
+			"Открой вакансию по ссылке и нажми «Я откликнулся» после ручной отправки.",
+		)
+	case core.ApplicationStatusSubmitted:
+		lines = append(lines, "Ручная отправка зафиксирована. Теперь можно отмечать результат.")
+	case core.ApplicationStatusCancelled:
+		lines = append(lines, "Отклик отменён. При необходимости можно подготовить новый.")
+	case core.ApplicationStatusHRContact, core.ApplicationStatusInterview, core.ApplicationStatusOffer, core.ApplicationStatusRejected:
+		lines = append(lines, "Результат вручную зафиксирован.")
+	default:
+		lines = append(lines, "Черновик отклика сохранён.")
+	}
+	if view.VacancyURL != "" {
+		lines = append(lines, html.EscapeString(view.VacancyURL))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func applicationPreviewMarkup(view ApplicationView) *tele.InlineKeyboardMarkup {
+	rows := [][]tele.InlineKeyboardButton{
+		{
+			tele.Button("Подтвердить", "app:"+view.Application.ID+":approve"),
+			tele.Button("Отменить", "app:"+view.Application.ID+":cancel"),
+		},
+	}
+	if strings.TrimSpace(view.VacancyURL) != "" {
+		rows = append(rows, []tele.InlineKeyboardButton{tele.URLButton("Открыть вакансию", view.VacancyURL)})
+	}
+	return tele.NewInlineKeyboard(rows...)
+}
+
+func applicationStatusMarkup(view ApplicationView) *tele.InlineKeyboardMarkup {
+	switch view.Application.Status {
+	case core.ApplicationStatusManualActionRequired, core.ApplicationStatusApproved:
+		rows := [][]tele.InlineKeyboardButton{
+			{tele.Button("Я откликнулся", "app:"+view.Application.ID+":submitted")},
+		}
+		if strings.TrimSpace(view.VacancyURL) != "" {
+			rows = append(rows, []tele.InlineKeyboardButton{tele.URLButton("Открыть вакансию", view.VacancyURL)})
+		}
+		return tele.NewInlineKeyboard(rows...)
+	case core.ApplicationStatusSubmitted, core.ApplicationStatusHRContact, core.ApplicationStatusInterview, core.ApplicationStatusOffer, core.ApplicationStatusRejected:
+		rows := [][]tele.InlineKeyboardButton{
+			{
+				tele.Button("Связался HR", "app:"+view.Application.ID+":hr"),
+				tele.Button("Назначено интервью", "app:"+view.Application.ID+":interview"),
+			},
+			{
+				tele.Button("Получен отказ", "app:"+view.Application.ID+":reject"),
+				tele.Button("Получен оффер", "app:"+view.Application.ID+":offer"),
+			},
+		}
+		if strings.TrimSpace(view.VacancyURL) != "" {
+			rows = append(rows, []tele.InlineKeyboardButton{tele.URLButton("Открыть вакансию", view.VacancyURL)})
+		}
+		return tele.NewInlineKeyboard(rows...)
+	case core.ApplicationStatusCancelled:
+		rows := [][]tele.InlineKeyboardButton{}
+		if view.Vacancy != nil {
+			rows = append(rows, []tele.InlineKeyboardButton{tele.Button("Подготовить отклик", "vac:"+view.Vacancy.ID+":prep")})
+		}
+		if strings.TrimSpace(view.VacancyURL) != "" {
+			rows = append(rows, []tele.InlineKeyboardButton{tele.URLButton("Открыть вакансию", view.VacancyURL)})
+		}
+		return tele.NewInlineKeyboard(rows...)
+	default:
+		return applicationPreviewMarkup(view)
+	}
+}
+
+func applicationStatusLabel(status core.ApplicationStatus) string {
+	switch status {
+	case core.ApplicationStatusDraft:
+		return "Черновик отклика"
+	case core.ApplicationStatusWaitingApproval:
+		return "Отклик готов"
+	case core.ApplicationStatusApproved:
+		return "Отклик подтверждён"
+	case core.ApplicationStatusManualActionRequired:
+		return "Нужна ручная отправка"
+	case core.ApplicationStatusSubmitted:
+		return "Отклик отправлен вручную"
+	case core.ApplicationStatusCancelled:
+		return "Отклик отменён"
+	case core.ApplicationStatusHRContact:
+		return "HR связался"
+	case core.ApplicationStatusInterview:
+		return "Назначено интервью"
+	case core.ApplicationStatusOffer:
+		return "Получен оффер"
+	case core.ApplicationStatusRejected:
+		return "Получен отказ"
+	default:
+		return string(status)
+	}
+}
+
+func telegramActor(user tele.User) string {
+	return firstNonEmpty(user.FirstName, user.Username, fmt.Sprintf("telegram:%d", user.ID))
 }
 
 func salaryRangeLabel(from, to *int, currency string) string {

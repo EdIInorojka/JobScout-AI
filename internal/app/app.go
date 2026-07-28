@@ -25,11 +25,18 @@ var (
 	ErrInvalidStatusChange  = errors.New("invalid vacancy status transition")
 )
 
+type telegramClient interface {
+	GetUpdates(ctx context.Context, offset, timeoutSec int) ([]tele.Update, error)
+	SendMessage(ctx context.Context, chatID int64, text string, markup *tele.InlineKeyboardMarkup) error
+	EditMessageText(ctx context.Context, chatID int64, messageID int, text string, markup *tele.InlineKeyboardMarkup) error
+	AnswerCallbackQuery(ctx context.Context, callbackID string, text string) error
+}
+
 type App struct {
 	cfg      config.Config
 	storage  store.Store
 	hhClient *hh.Client
-	tgClient *tele.Client
+	tgClient telegramClient
 	logger   *slog.Logger
 	now      func() time.Time
 }
@@ -59,7 +66,7 @@ type StatusUpdateRequest struct {
 	Status string `json:"status"`
 }
 
-func New(cfg config.Config, storage store.Store, hhClient *hh.Client, tgClient *tele.Client, logger *slog.Logger) *App {
+func New(cfg config.Config, storage store.Store, hhClient *hh.Client, tgClient telegramClient, logger *slog.Logger) *App {
 	if logger == nil {
 		logger = slog.Default()
 	}

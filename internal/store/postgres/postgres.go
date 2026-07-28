@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"jobscout.ai/internal/core"
@@ -532,6 +533,243 @@ WHERE vacancy_id = $1`, vacancyID)
 	return &match, nil
 }
 
+func (s *Store) UpsertResume(ctx context.Context, resume *core.Resume) error {
+	if resume.ID == "" {
+		resume.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if resume.CreatedAt.IsZero() {
+		resume.CreatedAt = now
+	}
+	resume.UpdatedAt = now
+	resume.Name = strings.TrimSpace(resume.Name)
+	resume.TextContent = strings.TrimSpace(resume.TextContent)
+	resume.Skills = core.NormalizeStringList(resume.Skills)
+	row := s.db.QueryRowContext(ctx, `
+INSERT INTO resumes (
+    id, candidate_profile_id, name, target_role, language, text_content, skills, is_active, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+) ON CONFLICT (id) DO UPDATE SET
+    candidate_profile_id = EXCLUDED.candidate_profile_id,
+    name = EXCLUDED.name,
+    target_role = EXCLUDED.target_role,
+    language = EXCLUDED.language,
+    text_content = EXCLUDED.text_content,
+    skills = EXCLUDED.skills,
+    is_active = EXCLUDED.is_active,
+    updated_at = EXCLUDED.updated_at
+RETURNING id`,
+		resume.ID,
+		resume.CandidateProfileID,
+		resume.Name,
+		string(resume.TargetRole),
+		string(resume.Language),
+		resume.TextContent,
+		mustJSON(resume.Skills),
+		resume.IsActive,
+		resume.CreatedAt,
+		resume.UpdatedAt,
+	)
+	return row.Scan(&resume.ID)
+}
+
+func (s *Store) GetResume(ctx context.Context, id string) (*core.Resume, error) {
+	row := s.db.QueryRowContext(ctx, resumeSelectBy("id = $1"), id)
+	resume, err := scanResume(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &resume, nil
+}
+
+func (s *Store) ListResumes(ctx context.Context, candidateProfileID string) ([]core.Resume, error) {
+	query := resumeSelectBy("1 = 1")
+	args := make([]any, 0, 1)
+	if strings.TrimSpace(candidateProfileID) != "" {
+		query = resumeSelectBy("candidate_profile_id = $1") + " ORDER BY created_at ASC, id ASC"
+		args = append(args, candidateProfileID)
+	} else {
+		query += " ORDER BY created_at ASC, id ASC"
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.Resume, 0)
+	for rows.Next() {
+		resume, err := scanResume(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resume)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) FindActiveApplicationByVacancyProfile(ctx context.Context, vacancyID, candidateProfileID string) (*core.Application, error) {
+	row := s.db.QueryRowContext(ctx, applicationSelectBy("vacancy_id = $1 AND candidate_profile_id = $2 AND status NOT IN ('CANCELLED', 'REJECTED') ORDER BY created_at ASC, id ASC LIMIT 1"), vacancyID, candidateProfileID)
+	application, err := scanApplication(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &application, nil
+}
+
+func (s *Store) GetApplication(ctx context.Context, id string) (*core.Application, error) {
+	row := s.db.QueryRowContext(ctx, applicationSelectBy("id = $1"), id)
+	application, err := scanApplication(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &application, nil
+}
+
+func (s *Store) ListApplications(ctx context.Context, candidateProfileID string) ([]core.Application, error) {
+	query := applicationSelectBy("1 = 1")
+	args := make([]any, 0, 1)
+	if strings.TrimSpace(candidateProfileID) != "" {
+		query = applicationSelectBy("candidate_profile_id = $1") + " ORDER BY created_at DESC, id DESC"
+		args = append(args, candidateProfileID)
+	} else {
+		query += " ORDER BY created_at DESC, id DESC"
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.Application, 0)
+	for rows.Next() {
+		application, err := scanApplication(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, application)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertApplication(ctx context.Context, application *core.Application) error {
+	if application.ID == "" {
+		application.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if application.CreatedAt.IsZero() {
+		application.CreatedAt = now
+	}
+	if application.PreparedAt.IsZero() {
+		application.PreparedAt = now
+	}
+	application.UpdatedAt = now
+	application.CoverLetter = strings.TrimSpace(application.CoverLetter)
+	application.Notes = strings.TrimSpace(application.Notes)
+	application.RejectionReason = strings.TrimSpace(application.RejectionReason)
+	row := s.db.QueryRowContext(ctx, `
+INSERT INTO applications (
+    id, vacancy_id, candidate_profile_id, resume_id, status, application_method, cover_letter,
+    prepared_at, approved_at, submitted_at, response_received_at, rejection_reason, notes,
+    created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15
+) ON CONFLICT (id) DO UPDATE SET
+    vacancy_id = EXCLUDED.vacancy_id,
+    candidate_profile_id = EXCLUDED.candidate_profile_id,
+    resume_id = EXCLUDED.resume_id,
+    status = EXCLUDED.status,
+    application_method = EXCLUDED.application_method,
+    cover_letter = EXCLUDED.cover_letter,
+    prepared_at = EXCLUDED.prepared_at,
+    approved_at = EXCLUDED.approved_at,
+    submitted_at = EXCLUDED.submitted_at,
+    response_received_at = EXCLUDED.response_received_at,
+    rejection_reason = EXCLUDED.rejection_reason,
+    notes = EXCLUDED.notes,
+    updated_at = EXCLUDED.updated_at
+RETURNING id`,
+		application.ID,
+		application.VacancyID,
+		application.CandidateProfileID,
+		application.ResumeID,
+		string(application.Status),
+		string(application.ApplicationMethod),
+		application.CoverLetter,
+		application.PreparedAt,
+		application.ApprovedAt,
+		application.SubmittedAt,
+		application.ResponseReceivedAt,
+		application.RejectionReason,
+		application.Notes,
+		application.CreatedAt,
+		application.UpdatedAt,
+	)
+	if err := row.Scan(&application.ID); err != nil {
+		if isConflictError(err) {
+			return store.ErrConflict
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Store) CreateAuditEvent(ctx context.Context, event *core.AuditEvent) error {
+	if event.ID == "" {
+		event.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	}
+	metadata, err := mustJSONMap(event.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO audit_events (
+    id, actor, action, entity_type, entity_id, metadata, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7
+)`,
+		event.ID,
+		event.Actor,
+		string(event.Action),
+		event.EntityType,
+		event.EntityID,
+		metadata,
+		event.CreatedAt,
+	)
+	return err
+}
+
+func (s *Store) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error) {
+	rows, err := s.db.QueryContext(ctx, auditSelectBy("1 = 1")+" ORDER BY created_at ASC, id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.AuditEvent, 0)
+	for rows.Next() {
+		event, err := scanAuditEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) WithinImportTransaction(ctx context.Context, fn func(store.ImportStore) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -758,6 +996,298 @@ RETURNING id`,
 	return row.Scan(&match.ID)
 }
 
+func (s *txStore) GetCompanyByID(ctx context.Context, id string) (*core.Company, error) {
+	row := s.tx.QueryRowContext(ctx, `
+SELECT id, normalized_name, display_name, website, career_page, blacklisted, notes, created_at, updated_at
+FROM companies
+WHERE id = $1`, id)
+	company, err := scanCompany(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return company, nil
+}
+
+func (s *txStore) UpdateVacancyStatus(ctx context.Context, id string, status core.VacancyStatus, duplicateOf *string, dedupReason *string) error {
+	_, err := s.tx.ExecContext(ctx, `
+UPDATE vacancies
+SET status = $2,
+    duplicate_of_vacancy_id = $3,
+    dedup_reason = $4,
+    updated_at = NOW()
+WHERE id = $1`, id, string(status), duplicateOf, dedupReason)
+	return err
+}
+
+func (s *txStore) GetVacancy(ctx context.Context, id string) (*core.Vacancy, error) {
+	row := s.tx.QueryRowContext(ctx, vacancySelectBy("id = $1"), id)
+	vacancy, err := scanVacancy(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &vacancy, nil
+}
+
+func (s *txStore) GetVacancyMatch(ctx context.Context, vacancyID string) (*core.VacancyMatch, error) {
+	row := s.tx.QueryRowContext(ctx, `
+SELECT id, vacancy_id, candidate_profile_id, total_score, skills_score, experience_score,
+       location_score, salary_score, grade_score, role_score, positive_reasons, negative_reasons,
+       missing_skills, hard_filter_passed, calculated_at, scoring_version
+FROM vacancy_matches
+WHERE vacancy_id = $1`, vacancyID)
+	match, err := scanVacancyMatch(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &match, nil
+}
+
+func (s *txStore) UpsertResume(ctx context.Context, resume *core.Resume) error {
+	if resume.ID == "" {
+		resume.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if resume.CreatedAt.IsZero() {
+		resume.CreatedAt = now
+	}
+	resume.UpdatedAt = now
+	resume.Name = strings.TrimSpace(resume.Name)
+	resume.TextContent = strings.TrimSpace(resume.TextContent)
+	resume.Skills = core.NormalizeStringList(resume.Skills)
+	row := s.tx.QueryRowContext(ctx, `
+INSERT INTO resumes (
+    id, candidate_profile_id, name, target_role, language, text_content, skills, is_active, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+) ON CONFLICT (id) DO UPDATE SET
+    candidate_profile_id = EXCLUDED.candidate_profile_id,
+    name = EXCLUDED.name,
+    target_role = EXCLUDED.target_role,
+    language = EXCLUDED.language,
+    text_content = EXCLUDED.text_content,
+    skills = EXCLUDED.skills,
+    is_active = EXCLUDED.is_active,
+    updated_at = EXCLUDED.updated_at
+RETURNING id`,
+		resume.ID,
+		resume.CandidateProfileID,
+		resume.Name,
+		string(resume.TargetRole),
+		string(resume.Language),
+		resume.TextContent,
+		mustJSON(resume.Skills),
+		resume.IsActive,
+		resume.CreatedAt,
+		resume.UpdatedAt,
+	)
+	return row.Scan(&resume.ID)
+}
+
+func (s *txStore) GetResume(ctx context.Context, id string) (*core.Resume, error) {
+	row := s.tx.QueryRowContext(ctx, resumeSelectBy("id = $1"), id)
+	resume, err := scanResume(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &resume, nil
+}
+
+func (s *txStore) ListResumes(ctx context.Context, candidateProfileID string) ([]core.Resume, error) {
+	query := resumeSelectBy("1 = 1")
+	args := make([]any, 0, 1)
+	if strings.TrimSpace(candidateProfileID) != "" {
+		query = resumeSelectBy("candidate_profile_id = $1") + " ORDER BY created_at ASC, id ASC"
+		args = append(args, candidateProfileID)
+	} else {
+		query += " ORDER BY created_at ASC, id ASC"
+	}
+	rows, err := s.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.Resume, 0)
+	for rows.Next() {
+		resume, err := scanResume(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resume)
+	}
+	return out, rows.Err()
+}
+
+func (s *txStore) FindActiveApplicationByVacancyProfile(ctx context.Context, vacancyID, candidateProfileID string) (*core.Application, error) {
+	row := s.tx.QueryRowContext(ctx, applicationSelectBy("vacancy_id = $1 AND candidate_profile_id = $2 AND status NOT IN ('CANCELLED', 'REJECTED') ORDER BY created_at ASC, id ASC LIMIT 1"), vacancyID, candidateProfileID)
+	application, err := scanApplication(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &application, nil
+}
+
+func (s *txStore) GetApplication(ctx context.Context, id string) (*core.Application, error) {
+	row := s.tx.QueryRowContext(ctx, applicationSelectBy("id = $1"), id)
+	application, err := scanApplication(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return &application, nil
+}
+
+func (s *txStore) ListApplications(ctx context.Context, candidateProfileID string) ([]core.Application, error) {
+	query := applicationSelectBy("1 = 1")
+	args := make([]any, 0, 1)
+	if strings.TrimSpace(candidateProfileID) != "" {
+		query = applicationSelectBy("candidate_profile_id = $1") + " ORDER BY created_at DESC, id DESC"
+		args = append(args, candidateProfileID)
+	} else {
+		query += " ORDER BY created_at DESC, id DESC"
+	}
+	rows, err := s.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.Application, 0)
+	for rows.Next() {
+		application, err := scanApplication(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, application)
+	}
+	return out, rows.Err()
+}
+
+func (s *txStore) UpsertApplication(ctx context.Context, application *core.Application) error {
+	if application.ID == "" {
+		application.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if application.CreatedAt.IsZero() {
+		application.CreatedAt = now
+	}
+	if application.PreparedAt.IsZero() {
+		application.PreparedAt = now
+	}
+	application.UpdatedAt = now
+	application.CoverLetter = strings.TrimSpace(application.CoverLetter)
+	application.Notes = strings.TrimSpace(application.Notes)
+	application.RejectionReason = strings.TrimSpace(application.RejectionReason)
+	row := s.tx.QueryRowContext(ctx, `
+INSERT INTO applications (
+    id, vacancy_id, candidate_profile_id, resume_id, status, application_method, cover_letter,
+    prepared_at, approved_at, submitted_at, response_received_at, rejection_reason, notes,
+    created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15
+) ON CONFLICT (id) DO UPDATE SET
+    vacancy_id = EXCLUDED.vacancy_id,
+    candidate_profile_id = EXCLUDED.candidate_profile_id,
+    resume_id = EXCLUDED.resume_id,
+    status = EXCLUDED.status,
+    application_method = EXCLUDED.application_method,
+    cover_letter = EXCLUDED.cover_letter,
+    prepared_at = EXCLUDED.prepared_at,
+    approved_at = EXCLUDED.approved_at,
+    submitted_at = EXCLUDED.submitted_at,
+    response_received_at = EXCLUDED.response_received_at,
+    rejection_reason = EXCLUDED.rejection_reason,
+    notes = EXCLUDED.notes,
+    updated_at = EXCLUDED.updated_at
+RETURNING id`,
+		application.ID,
+		application.VacancyID,
+		application.CandidateProfileID,
+		application.ResumeID,
+		string(application.Status),
+		string(application.ApplicationMethod),
+		application.CoverLetter,
+		application.PreparedAt,
+		application.ApprovedAt,
+		application.SubmittedAt,
+		application.ResponseReceivedAt,
+		application.RejectionReason,
+		application.Notes,
+		application.CreatedAt,
+		application.UpdatedAt,
+	)
+	if err := row.Scan(&application.ID); err != nil {
+		if isConflictError(err) {
+			return store.ErrConflict
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *txStore) CreateAuditEvent(ctx context.Context, event *core.AuditEvent) error {
+	if event.ID == "" {
+		event.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	}
+	metadata, err := mustJSONMap(event.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.tx.ExecContext(ctx, `
+INSERT INTO audit_events (
+    id, actor, action, entity_type, entity_id, metadata, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7
+)`,
+		event.ID,
+		event.Actor,
+		string(event.Action),
+		event.EntityType,
+		event.EntityID,
+		metadata,
+		event.CreatedAt,
+	)
+	return err
+}
+
+func (s *txStore) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error) {
+	rows, err := s.tx.QueryContext(ctx, auditSelectBy("1 = 1")+" ORDER BY created_at ASC, id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.AuditEvent, 0)
+	for rows.Next() {
+		event, err := scanAuditEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
 func vacancySelectBy(where string) string {
 	return `
 SELECT id, source_id, external_id, source_url, canonical_url, title, normalized_title, company_id,
@@ -766,6 +1296,30 @@ SELECT id, source_id, external_id, source_url, canonical_url, title, normalized_
        published_at, collected_at, content_hash, status, duplicate_of_vacancy_id, dedup_reason,
        created_at, updated_at
 FROM vacancies
+WHERE ` + where
+}
+
+func resumeSelectBy(where string) string {
+	return `
+SELECT id, candidate_profile_id, name, target_role, language, text_content, skills, is_active,
+       created_at, updated_at
+FROM resumes
+WHERE ` + where
+}
+
+func applicationSelectBy(where string) string {
+	return `
+SELECT id, vacancy_id, candidate_profile_id, resume_id, status, application_method, cover_letter,
+       prepared_at, approved_at, submitted_at, response_received_at, rejection_reason, notes,
+       created_at, updated_at
+FROM applications
+WHERE ` + where
+}
+
+func auditSelectBy(where string) string {
+	return `
+SELECT id, actor, action, entity_type, entity_id, metadata, created_at
+FROM audit_events
 WHERE ` + where
 }
 
@@ -965,6 +1519,82 @@ func scanVacancyMatch(scanner interface{ Scan(...any) error }) (core.VacancyMatc
 	return match, nil
 }
 
+func scanResume(scanner interface{ Scan(...any) error }) (core.Resume, error) {
+	var resume core.Resume
+	var skills []string
+	if err := scanner.Scan(
+		&resume.ID,
+		&resume.CandidateProfileID,
+		&resume.Name,
+		&resume.TargetRole,
+		&resume.Language,
+		&resume.TextContent,
+		jsonSliceScanner{target: &skills},
+		&resume.IsActive,
+		&resume.CreatedAt,
+		&resume.UpdatedAt,
+	); err != nil {
+		return core.Resume{}, err
+	}
+	resume.Skills = skills
+	return resume, nil
+}
+
+func scanApplication(scanner interface{ Scan(...any) error }) (core.Application, error) {
+	var application core.Application
+	var approvedAt, submittedAt, responseReceivedAt sql.NullTime
+	if err := scanner.Scan(
+		&application.ID,
+		&application.VacancyID,
+		&application.CandidateProfileID,
+		&application.ResumeID,
+		&application.Status,
+		&application.ApplicationMethod,
+		&application.CoverLetter,
+		&application.PreparedAt,
+		&approvedAt,
+		&submittedAt,
+		&responseReceivedAt,
+		&application.RejectionReason,
+		&application.Notes,
+		&application.CreatedAt,
+		&application.UpdatedAt,
+	); err != nil {
+		return core.Application{}, err
+	}
+	if approvedAt.Valid {
+		t := approvedAt.Time
+		application.ApprovedAt = &t
+	}
+	if submittedAt.Valid {
+		t := submittedAt.Time
+		application.SubmittedAt = &t
+	}
+	if responseReceivedAt.Valid {
+		t := responseReceivedAt.Time
+		application.ResponseReceivedAt = &t
+	}
+	return application, nil
+}
+
+func scanAuditEvent(scanner interface{ Scan(...any) error }) (core.AuditEvent, error) {
+	var event core.AuditEvent
+	var metadata map[string]any
+	if err := scanner.Scan(
+		&event.ID,
+		&event.Actor,
+		&event.Action,
+		&event.EntityType,
+		&event.EntityID,
+		jsonMapScanner{target: &metadata},
+		&event.CreatedAt,
+	); err != nil {
+		return core.AuditEvent{}, err
+	}
+	event.Metadata = metadata
+	return event, nil
+}
+
 func mustJSON(values []string) []byte {
 	out, _ := json.Marshal(values)
 	return out
@@ -975,6 +1605,11 @@ func mustJSONMap(values map[string]any) ([]byte, error) {
 		values = map[string]any{}
 	}
 	return json.Marshal(values)
+}
+
+func isConflictError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func nullString(value string) any {

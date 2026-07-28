@@ -21,6 +21,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/v1/vacancies/recommended", a.handleRecommendedVacancies)
 	mux.HandleFunc("/v1/vacancies/import-url", a.handleImportVacancy)
 	mux.HandleFunc("/v1/vacancies/", a.handleVacancyByID)
+	mux.HandleFunc("/v1/resumes", a.handleResumes)
+	mux.HandleFunc("/v1/resumes/", a.handleResumeByID)
+	mux.HandleFunc("/v1/applications", a.handleApplications)
+	mux.HandleFunc("/v1/applications/", a.handleApplicationByID)
 	return mux
 }
 
@@ -144,6 +148,12 @@ func (a *App) handleVacancyByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/vacancies/")
 	if path == "" {
 		writeError(w, http.StatusNotFound, "vacancy id is required")
+		return
+	}
+	if strings.HasSuffix(path, "/applications/prepare") {
+		id := strings.TrimSuffix(path, "/applications/prepare")
+		id = strings.Trim(id, "/")
+		a.handlePrepareApplication(w, r, id)
 		return
 	}
 	if strings.HasSuffix(path, "/status") {

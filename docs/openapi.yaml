@@ -151,8 +151,201 @@ paths:
                 $ref: "#/components/schemas/VacancyWithMatch"
         "409":
           description: Invalid transition
+  /v1/vacancies/{id}/applications/prepare:
+    post:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareApplicationRequest"
+      responses:
+        "200":
+          description: Existing application or prepared preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+        "201":
+          description: Newly prepared application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+        "404":
+          description: Not found
+        "409":
+          description: Conflict or invalid state
+  /v1/resumes:
+    get:
+      responses:
+        "200":
+          description: Resumes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Resume"
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeCreateRequest"
+      responses:
+        "201":
+          description: Created resume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resume"
+  /v1/resumes/{id}:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resume"
+        "404":
+          description: Not found
+    patch:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumePatchRequest"
+      responses:
+        "200":
+          description: Updated resume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resume"
+        "404":
+          description: Not found
+  /v1/applications:
+    get:
+      responses:
+        "200":
+          description: Applications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApplicationView"
+  /v1/applications/{id}:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+        "404":
+          description: Not found
+  /v1/applications/{id}/approve:
+    post:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Approved application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+  /v1/applications/{id}/cancel:
+    post:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancelled application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+  /v1/applications/{id}/mark-submitted:
+    post:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Marked submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
+  /v1/applications/{id}/outcome:
+    patch:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplicationOutcomeRequest"
+      responses:
+        "200":
+          description: Updated application outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationView"
 components:
   schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
     CandidateProfile:
       type: object
       properties:
@@ -272,6 +465,135 @@ components:
         status: { type: string }
         duplicateOfVacancyId: { type: string, nullable: true }
         dedupReason: { type: string, nullable: true }
+    ResumeTargetRole:
+      type: string
+      enum:
+        - GO_BACKEND
+        - PYTHON_BACKEND
+        - SYSTEM_ANALYST
+        - GENERAL_BACKEND
+    ResumeLanguage:
+      type: string
+      enum:
+        - RU
+        - EN
+    ApplicationMethod:
+      type: string
+      enum:
+        - MANUAL_LINK
+        - OFFICIAL_API
+    ApplicationStatus:
+      type: string
+      enum:
+        - DRAFT
+        - WAITING_APPROVAL
+        - APPROVED
+        - MANUAL_ACTION_REQUIRED
+        - SUBMITTED
+        - CANCELLED
+        - HR_CONTACT
+        - INTERVIEW
+        - OFFER
+        - REJECTED
+    ResumeCreateRequest:
+      type: object
+      required: [name, targetRole, language, textContent]
+      properties:
+        name: { type: string }
+        targetRole:
+          $ref: "#/components/schemas/ResumeTargetRole"
+        language:
+          $ref: "#/components/schemas/ResumeLanguage"
+        textContent: { type: string }
+        skills:
+          type: array
+          items: { type: string }
+        isActive: { type: boolean, nullable: true }
+    ResumePatchRequest:
+      type: object
+      properties:
+        name: { type: string, nullable: true }
+        targetRole:
+          allOf:
+            - $ref: "#/components/schemas/ResumeTargetRole"
+          nullable: true
+        language:
+          allOf:
+            - $ref: "#/components/schemas/ResumeLanguage"
+          nullable: true
+        textContent: { type: string, nullable: true }
+        skills:
+          type: array
+          items: { type: string }
+          nullable: true
+        isActive: { type: boolean, nullable: true }
+    PrepareApplicationRequest:
+      type: object
+      properties:
+        resumeId: { type: string, nullable: true }
+    ApplicationOutcomeRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/ApplicationStatus"
+        rejectionReason: { type: string }
+        notes: { type: string }
+    Resume:
+      type: object
+      properties:
+        id: { type: string }
+        candidateProfileId: { type: string }
+        name: { type: string }
+        targetRole:
+          $ref: "#/components/schemas/ResumeTargetRole"
+        language:
+          $ref: "#/components/schemas/ResumeLanguage"
+        textContent: { type: string }
+        skills:
+          type: array
+          items: { type: string }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Application:
+      type: object
+      properties:
+        id: { type: string }
+        vacancyId: { type: string }
+        candidateProfileId: { type: string }
+        resumeId: { type: string }
+        status:
+          $ref: "#/components/schemas/ApplicationStatus"
+        applicationMethod:
+          $ref: "#/components/schemas/ApplicationMethod"
+        coverLetter: { type: string }
+        preparedAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        submittedAt: { type: string, format: date-time, nullable: true }
+        responseReceivedAt: { type: string, format: date-time, nullable: true }
+        rejectionReason: { type: string }
+        notes: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ApplicationView:
+      type: object
+      properties:
+        application:
+          $ref: "#/components/schemas/Application"
+        resume:
+          $ref: "#/components/schemas/Resume"
+        vacancy:
+          $ref: "#/components/schemas/Vacancy"
+        company:
+          $ref: "#/components/schemas/Company"
+        match:
+          $ref: "#/components/schemas/VacancyMatch"
+        warnings:
+          type: array
+          items: { type: string }
+        vacancyUrl: { type: string }
+        created: { type: boolean }
     VacancyMatch:
       type: object
       properties:
@@ -306,4 +628,3 @@ components:
           $ref: "#/components/schemas/Company"
         match:
           $ref: "#/components/schemas/VacancyMatch"
-

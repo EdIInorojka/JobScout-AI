@@ -54,7 +54,7 @@ func ResetPostgres(t testing.TB, db *sql.DB) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := db.ExecContext(ctx, `
-TRUNCATE TABLE vacancy_matches, vacancies, companies, job_sources, candidate_profiles RESTART IDENTITY CASCADE`)
+TRUNCATE TABLE audit_events, applications, resumes, vacancy_matches, vacancies, companies, job_sources, candidate_profiles RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}

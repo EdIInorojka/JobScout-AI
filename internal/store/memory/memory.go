@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,20 +12,25 @@ import (
 )
 
 type Store struct {
-	mu        sync.RWMutex
-	profile   *core.CandidateProfile
-	sources   map[string]core.JobSource
-	companies map[string]core.Company
-	vacancies map[string]core.Vacancy
-	matches   map[string]core.VacancyMatch
+	mu           sync.RWMutex
+	profile      *core.CandidateProfile
+	sources      map[string]core.JobSource
+	companies    map[string]core.Company
+	vacancies    map[string]core.Vacancy
+	matches      map[string]core.VacancyMatch
+	resumes      map[string]core.Resume
+	applications map[string]core.Application
+	auditEvents  []core.AuditEvent
 }
 
 func New() *Store {
 	return &Store{
-		sources:   make(map[string]core.JobSource),
-		companies: make(map[string]core.Company),
-		vacancies: make(map[string]core.Vacancy),
-		matches:   make(map[string]core.VacancyMatch),
+		sources:      make(map[string]core.JobSource),
+		companies:    make(map[string]core.Company),
+		vacancies:    make(map[string]core.Vacancy),
+		matches:      make(map[string]core.VacancyMatch),
+		resumes:      make(map[string]core.Resume),
+		applications: make(map[string]core.Application),
 	}
 }
 
@@ -244,4 +250,158 @@ func (s *Store) GetVacancyMatch(ctx context.Context, vacancyID string) (*core.Va
 	}
 	m := match
 	return &m, nil
+}
+
+func (s *Store) UpsertResume(ctx context.Context, resume *core.Resume) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resume.ID == "" {
+		resume.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if resume.CreatedAt.IsZero() {
+		resume.CreatedAt = now
+	}
+	resume.UpdatedAt = now
+	resume.Name = strings.TrimSpace(resume.Name)
+	resume.TextContent = strings.TrimSpace(resume.TextContent)
+	resume.Skills = core.NormalizeStringList(resume.Skills)
+	cp := *resume
+	s.resumes[cp.ID] = cp
+	return nil
+}
+
+func (s *Store) GetResume(ctx context.Context, id string) (*core.Resume, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	resume, ok := s.resumes[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := resume
+	return &cp, nil
+}
+
+func (s *Store) ListResumes(ctx context.Context, candidateProfileID string) ([]core.Resume, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]core.Resume, 0, len(s.resumes))
+	for _, resume := range s.resumes {
+		if candidateProfileID != "" && resume.CandidateProfileID != candidateProfileID {
+			continue
+		}
+		cp := resume
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *Store) FindActiveApplicationByVacancyProfile(ctx context.Context, vacancyID, candidateProfileID string) (*core.Application, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, application := range s.applications {
+		if application.VacancyID == vacancyID && application.CandidateProfileID == candidateProfileID && application.IsActive() {
+			cp := application
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *Store) GetApplication(ctx context.Context, id string) (*core.Application, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	application, ok := s.applications[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := application
+	return &cp, nil
+}
+
+func (s *Store) ListApplications(ctx context.Context, candidateProfileID string) ([]core.Application, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]core.Application, 0, len(s.applications))
+	for _, application := range s.applications {
+		if candidateProfileID != "" && application.CandidateProfileID != candidateProfileID {
+			continue
+		}
+		cp := application
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
+}
+
+func (s *Store) UpsertApplication(ctx context.Context, application *core.Application) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if application.ID == "" {
+		application.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if application.CreatedAt.IsZero() {
+		application.CreatedAt = now
+	}
+	application.UpdatedAt = now
+	if application.PreparedAt.IsZero() {
+		application.PreparedAt = now
+	}
+	application.CoverLetter = strings.TrimSpace(application.CoverLetter)
+	application.Notes = strings.TrimSpace(application.Notes)
+	application.RejectionReason = strings.TrimSpace(application.RejectionReason)
+	if application.IsActive() {
+		for _, existing := range s.applications {
+			if existing.ID != application.ID && existing.VacancyID == application.VacancyID && existing.CandidateProfileID == application.CandidateProfileID && existing.IsActive() {
+				return store.ErrConflict
+			}
+		}
+	}
+	cp := *application
+	s.applications[cp.ID] = cp
+	return nil
+}
+
+func (s *Store) CreateAuditEvent(ctx context.Context, event *core.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event.ID == "" {
+		event.ID = core.NewID()
+	}
+	now := time.Now().UTC()
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	}
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
+	cp := *event
+	s.auditEvents = append(s.auditEvents, cp)
+	return nil
+}
+
+func (s *Store) ListAuditEvents(ctx context.Context) ([]core.AuditEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]core.AuditEvent, len(s.auditEvents))
+	copy(out, s.auditEvents)
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }

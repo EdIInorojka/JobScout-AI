@@ -1,13 +1,13 @@
 # JobScout AI
 
-JobScout AI is a private job-search assistant for one owner. This first slice ships the foundation only:
+JobScout AI is a private job-search assistant for one owner. The current MVP includes the core search pipeline plus application preparation and Telegram approval:
 
 - Go modular monolith
 - PostgreSQL schema and SQL migration
 - official HeadHunter collector
 - vacancy normalization, deduplication, hard filters, deterministic scoring
-- REST API for profile, search, vacancies, and status changes
-- minimal Telegram bot with `/start`, `/search`, `/recommended`
+- REST API for profile, search, vacancies, resumes, and applications
+- minimal Telegram bot with `/start`, `/search`, `/recommended`, and application approval flow
 - Docker Compose, OpenAPI, and tests
 
 ## Run locally
@@ -49,11 +49,22 @@ docker compose up --build app
 - `GET /v1/vacancies/{id}`
 - `PATCH /v1/vacancies/{id}/status`
 - `POST /v1/vacancies/import-url`
+- `POST /v1/vacancies/{id}/applications/prepare`
+- `GET /v1/resumes`
+- `POST /v1/resumes`
+- `GET /v1/resumes/{id}`
+- `PATCH /v1/resumes/{id}`
+- `GET /v1/applications`
+- `GET /v1/applications/{id}`
+- `POST /v1/applications/{id}/approve`
+- `POST /v1/applications/{id}/cancel`
+- `POST /v1/applications/{id}/mark-submitted`
+- `PATCH /v1/applications/{id}/outcome`
 
 ## Notes
 
 - Only official HeadHunter API usage is implemented.
-- Automatic applications are intentionally not implemented.
+- Applications are prepared deterministically and require explicit approval before submission.
 - Telegram bot is optional and disabled when the token is missing.
 
 ## Testing
@@ -81,4 +92,14 @@ HeadHunter fake-server suite:
 
 ```bash
 make test-hh
+```
+
+Full local verification:
+
+```bash
+gofmt -w .
+go test ./...
+go vet ./...
+go build ./...
+git diff --check
 ```
