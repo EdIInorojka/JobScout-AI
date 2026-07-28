@@ -1,0 +1,309 @@
+openapi: 3.0.3
+info:
+  title: JobScout AI API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      responses:
+        "200":
+          description: OK
+  /v1/profile:
+    get:
+      responses:
+        "200":
+          description: Candidate profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateProfile"
+        "404":
+          description: Profile not configured
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateProfile"
+      responses:
+        "200":
+          description: Saved profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateProfile"
+  /v1/search:
+    post:
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchSummary"
+  /v1/vacancies:
+    get:
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+        - in: query
+          name: per_page
+          schema:
+            type: integer
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Vacancies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VacancyWithMatch"
+  /v1/vacancies/recommended:
+    get:
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+        - in: query
+          name: per_page
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Recommended vacancies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VacancyWithMatch"
+  /v1/vacancies/import-url:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManualImportRequest"
+      responses:
+        "200":
+          description: Imported vacancy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VacancyWithMatch"
+        "422":
+          description: Manual text required
+  /v1/vacancies/{id}:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Vacancy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VacancyWithMatch"
+        "404":
+          description: Not found
+  /v1/vacancies/{id}/status:
+    patch:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusUpdateRequest"
+      responses:
+        "200":
+          description: Updated vacancy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VacancyWithMatch"
+        "409":
+          description: Invalid transition
+components:
+  schemas:
+    CandidateProfile:
+      type: object
+      properties:
+        id: { type: string }
+        desiredRoles:
+          type: array
+          items: { type: string }
+        desiredGrades:
+          type: array
+          items: { type: string }
+        primarySkills:
+          type: array
+          items: { type: string }
+        secondarySkills:
+          type: array
+          items: { type: string }
+        excludedSkills:
+          type: array
+          items: { type: string }
+        desiredLocations:
+          type: array
+          items: { type: string }
+        remoteAllowed: { type: boolean }
+        relocationAllowed: { type: boolean }
+        minimumSalary:
+          type: integer
+          nullable: true
+        currencies:
+          type: array
+          items: { type: string }
+        employmentTypes:
+          type: array
+          items: { type: string }
+        excludedCompanies:
+          type: array
+          items: { type: string }
+        stopWords:
+          type: array
+          items: { type: string }
+        yearsOfCommercialExperience: { type: integer }
+        languages:
+          type: array
+          items: { type: string }
+        workAuthorization:
+          type: array
+          items: { type: string }
+    SearchRequest:
+      type: object
+      properties:
+        query: { type: string }
+    SearchSummary:
+      type: object
+      properties:
+        found: { type: integer }
+        imported: { type: integer }
+        duplicates: { type: integer }
+        filtered: { type: integer }
+        recommended: { type: integer }
+        errors: { type: integer }
+    ManualImportRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string }
+        text: { type: string }
+        title: { type: string }
+        companyName: { type: string }
+        location: { type: string }
+    StatusUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    Company:
+      type: object
+      properties:
+        id: { type: string }
+        normalizedName: { type: string }
+        displayName: { type: string }
+        website: { type: string, nullable: true }
+        careerPage: { type: string, nullable: true }
+        blacklisted: { type: boolean }
+        notes: { type: string, nullable: true }
+    Vacancy:
+      type: object
+      properties:
+        id: { type: string }
+        sourceId: { type: string }
+        externalId: { type: string }
+        sourceUrl: { type: string }
+        canonicalUrl: { type: string, nullable: true }
+        title: { type: string }
+        normalizedTitle: { type: string }
+        companyId: { type: string }
+        description: { type: string }
+        requirements: { type: string }
+        responsibilities: { type: string }
+        location: { type: string }
+        remoteType: { type: string }
+        employmentType: { type: string }
+        grade: { type: string }
+        salaryFrom: { type: integer, nullable: true }
+        salaryTo: { type: integer, nullable: true }
+        currency: { type: string, nullable: true }
+        skills:
+          type: array
+          items: { type: string }
+        languageRequirements:
+          type: array
+          items: { type: string }
+        workAuthorizationRequirements:
+          type: array
+          items: { type: string }
+        publishedAt: { type: string, format: date-time }
+        collectedAt: { type: string, format: date-time }
+        contentHash: { type: string }
+        status: { type: string }
+        duplicateOfVacancyId: { type: string, nullable: true }
+        dedupReason: { type: string, nullable: true }
+    VacancyMatch:
+      type: object
+      properties:
+        id: { type: string }
+        vacancyId: { type: string }
+        candidateProfileId: { type: string }
+        totalScore: { type: integer }
+        skillsScore: { type: integer }
+        experienceScore: { type: integer }
+        locationScore: { type: integer }
+        salaryScore: { type: integer }
+        gradeScore: { type: integer }
+        roleScore: { type: integer }
+        positiveReasons:
+          type: array
+          items: { type: string }
+        negativeReasons:
+          type: array
+          items: { type: string }
+        missingSkills:
+          type: array
+          items: { type: string }
+        hardFilterPassed: { type: boolean }
+        calculatedAt: { type: string, format: date-time }
+        scoringVersion: { type: string }
+    VacancyWithMatch:
+      type: object
+      properties:
+        vacancy:
+          $ref: "#/components/schemas/Vacancy"
+        company:
+          $ref: "#/components/schemas/Company"
+        match:
+          $ref: "#/components/schemas/VacancyMatch"
+

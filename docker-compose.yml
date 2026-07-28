@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: jobscout
+      POSTGRES_USER: jobscout
+      POSTGRES_PASSWORD: jobscout
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobscout -d jobscout"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://jobscout:jobscout@db:5432/jobscout?sslmode=disable
+      APP_NAME: JobScout AI
+      OWNER_EMAIL: owner@example.com
+      HH_USER_AGENT: JobScout AI/1.0 (owner@example.com)
+      ENABLE_TELEGRAM: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+    command: ["serve"]
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://jobscout:jobscout@db:5432/jobscout?sslmode=disable
+      APP_NAME: JobScout AI
+      OWNER_EMAIL: owner@example.com
+      HH_BASE_URL: https://api.hh.ru
+      HH_USER_AGENT: JobScout AI/1.0 (owner@example.com)
+      ENABLE_TELEGRAM: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
